@@ -19,7 +19,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📦 RND Stok Report")
+st.title("📦 RND Stock Report")
 
 c1, c2 = st.columns(2)
 with c1:
@@ -189,4 +189,5 @@ if all([up_barcode, up_sales, up_orders, up_template]):
             st.info("Check if your files match the required column structure.")
 
 else:
+
     st.info("Please upload all 4 files to begin.")
