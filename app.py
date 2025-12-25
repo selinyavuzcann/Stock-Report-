@@ -1,0 +1,192 @@
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+import time
+
+st.set_page_config(page_title="RND Stok Automation", layout="wide")
+
+st.markdown("""
+    <style>
+        .main { background-color: #f8f9fa; }
+        div.stButton > button {
+            background-color: #2e7d32;
+            color: white;
+            width: 100%;
+            border-radius: 10px;
+            height: 50px;
+            font-weight: bold;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("📦 RND Stok Report")
+
+c1, c2 = st.columns(2)
+with c1:
+    up_barcode = st.file_uploader("📂 1. Barkodlu Ürün Raporu", type=["xlsx"])
+    up_sales = st.file_uploader("📂 2. Net Satış Raporu", type=["xlsx"])
+with c2:
+    up_orders = st.file_uploader("📂 3. Orders In Excel", type=["xlsx"])
+    up_template = st.file_uploader("📂 4. Template File", type=["xlsx"])
+
+def get_col_val(df, letter):
+    """Safely get column by Excel letter (A=0, B=1, etc.)"""
+    idx = ord(letter.upper()) - 65
+    if idx < len(df.columns):
+        return df.iloc[:, idx]
+    return pd.Series([None] * len(df))
+
+if all([up_barcode, up_sales, up_orders, up_template]):
+    if st.button("RUN AUTOMATION"):
+        try:
+            # --- Progress Bar Initialization ---
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            status_text.text("Reading Excel files...")
+            df_bc = pd.read_excel(up_barcode)
+            df_sl = pd.read_excel(up_sales)
+            df_ord = pd.read_excel(up_orders)
+            df_temp_cols = pd.read_excel(up_template).columns
+            progress_bar.progress(20)
+
+            status_text.text("Cleaning and Normalizing data...")
+            def clean_key(series):
+                return series.astype(str).str.strip().str.upper()
+
+            # Barkod Lookup
+            df_bc_clean = df_bc.copy()
+            bc_key = clean_key(get_col_val(df_bc_clean, 'D'))
+            df_bc_clean['lookup_key'] = bc_key
+            bc_lk = df_bc_clean.drop_duplicates(subset=['lookup_key']).set_index('lookup_key')
+
+            # Sales Lookup
+            df_sl_clean = df_sl.copy()
+            sl_key = clean_key(get_col_val(df_sl_clean, 'A'))
+            df_sl_clean['lookup_key'] = sl_key
+            sl_lk = df_sl_clean.drop_duplicates(subset=['lookup_key']).set_index('lookup_key')
+            progress_bar.progress(40)
+
+            status_text.text("Processing Sheet 1: Satılmış Ürün Raporu...")
+            s1 = pd.DataFrame(columns=df_temp_cols)
+            s1['Customer Invoice'] = get_col_val(df_ord, 'A')
+            s1['Guess Code'] = get_col_val(df_ord, 'M')
+            s1['Title'] = get_col_val(df_ord, 'I')
+            s1['Season'] = get_col_val(df_ord, 'D')
+            s1['Model'] = get_col_val(df_ord, 'G')
+            s1['Part'] = get_col_val(df_ord, 'H')
+            s1['N Order'] = get_col_val(df_ord, 'J')
+            s1['Color By Style'] = get_col_val(df_ord, 'L')
+            s1['V Net Order'] = get_col_val(df_ord, 'N')
+            s1['Q Order'] = get_col_val(df_ord, 'O')
+
+            s1_keys = clean_key(s1['Guess Code'])
+            s1['UrunTipi'] = s1_keys.map(bc_lk.iloc[:, 12]) 
+            s1['Line'] = s1_keys.map(bc_lk.iloc[:, 13])     
+            s1['Stock'] = s1_keys.map(bc_lk.iloc[:, 22])    
+            s1['Cinsiyet'] = s1_keys.map(bc_lk.iloc[:, 17]) 
+            s1['Ürün Grubu'] = s1_keys.map(bc_lk.iloc[:, 23]) 
+
+            s1['SaleCount'] = s1_keys.map(sl_lk.iloc[:, 9])      
+            s1['EcomSaleCount'] = s1_keys.map(sl_lk.iloc[:, 10]) 
+            s1['MPSaleCount'] = s1_keys.map(sl_lk.iloc[:, 11])   
+            progress_bar.progress(60)
+
+            status_text.text("Processing Sheet 2: Tüm Ürün Raporu...")
+            s2 = pd.DataFrame(columns=df_temp_cols)
+            s2['Guess Code'] = get_col_val(df_bc, 'D')
+            s2['Title'] = get_col_val(df_bc, 'A')
+            s2['UrunTipi'] = get_col_val(df_bc, 'M')
+            s2['Line'] = get_col_val(df_bc, 'N')
+            s2['Stock'] = get_col_val(df_bc, 'W')
+            s2['Cinsiyet'] = get_col_val(df_bc, 'R')
+            s2['Ürün Grubu'] = get_col_val(df_bc, 'X')
+            s2['Season'] = get_col_val(df_bc, 'O')
+            s2['Color By Style'] = get_col_val(df_bc, 'J')
+
+            s2_keys = clean_key(s2['Guess Code'])
+            s2['SaleCount'] = s2_keys.map(sl_lk.iloc[:, 9])
+            s2['EcomSaleCount'] = s2_keys.map(sl_lk.iloc[:, 10])
+            s2['MPSaleCount'] = s2_keys.map(sl_lk.iloc[:, 11])
+
+            df_ord_clean = df_ord.copy()
+            df_ord_clean['clean_m'] = clean_key(get_col_val(df_ord, 'M'))
+            ord_agg = df_ord_clean.groupby('clean_m').agg({
+                df_ord.columns[9]: 'sum',  
+                df_ord.columns[13]: 'sum', 
+                df_ord.columns[14]: 'sum'  
+            })
+            s2['N Order'] = s2_keys.map(ord_agg.iloc[:, 0])
+            s2['V Net Order'] = s2_keys.map(ord_agg.iloc[:, 1])
+            s2['Q Order'] = s2_keys.map(ord_agg.iloc[:, 2])
+            progress_bar.progress(75)
+
+            status_text.text("Calculating Summary and Aggregates...")
+            sc_val = pd.to_numeric(s1['SaleCount'], errors='coerce').sum()
+            qo_val = pd.to_numeric(s1['Q Order'], errors='coerce').sum()
+            eff_ratio = (sc_val / qo_val) if qo_val != 0 else 0
+
+            summary_efficiency = pd.DataFrame({
+                "Analysis": ["Total Sale Count (M)", "Total Q Order (L)", "Efficiency Ratio %"],
+                "Value": [sc_val, qo_val, f"{eff_ratio:.2%}"]
+            })
+
+            combined_data = pd.concat([s1, s2], ignore_index=True).drop_duplicates(subset=['Guess Code', 'UrunTipi', 'Line'])
+            numeric_cols = ['Q Order', 'SaleCount', 'MPSaleCount', 'EcomSaleCount', 'Stock']
+            for col in numeric_cols:
+                combined_data[col] = pd.to_numeric(combined_data[col], errors='coerce').fillna(0)
+
+            final_pivot = combined_data.groupby(['UrunTipi', 'Line', 'Guess Code'])[numeric_cols].sum().reset_index()
+            progress_bar.progress(85)
+
+            status_text.text("Generating Excel Workbook...")
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                s1.to_excel(writer, sheet_name='Satılmış Ürün Raporu', index=False)
+                s2.to_excel(writer, sheet_name='Tüm Ürün Raporu', index=False)
+                
+                ws_ozet = writer.book.add_worksheet('Özet')
+                writer.sheets['Özet'] = ws_ozet
+                
+                fmt_header = writer.book.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1, 'align': 'center'})
+                fmt_filter = writer.book.add_format({'bold': True, 'bg_color': '#F2F2F2', 'border': 1})
+                fmt_val_header = writer.book.add_format({'bold': True, 'bg_color': '#DEEAF6', 'border': 1})
+
+                ws_ozet.write('A1', 'TABLE 1: SALE / Q ORDER RATIO', fmt_header)
+                summary_efficiency.to_excel(writer, sheet_name='Özet', index=False, startrow=1)
+
+                start_row = 7
+                ws_ozet.write(start_row, 0, 'Filter: UrunTipi', fmt_filter)
+                ws_ozet.write(start_row, 1, '(All)', fmt_filter)
+                ws_ozet.write(start_row + 1, 0, 'Filter: Line', fmt_filter)
+                ws_ozet.write(start_row + 1, 1, '(All)', fmt_filter)
+                
+                ws_ozet.write(start_row + 3, 3, 'Values', fmt_val_header)
+               
+                final_pivot.to_excel(writer, sheet_name='Özet', index=False, startrow=start_row + 4)
+                
+                ws_ozet.autofilter(start_row + 4, 0, start_row + 4 + len(final_pivot), len(final_pivot.columns) - 1)
+                
+                ws_ozet.set_column('A:C', 20)
+                ws_ozet.set_column('D:H', 15)
+
+            progress_bar.progress(100)
+            status_text.text("Task Finished!")
+            time.sleep(1) # Brief pause so the user sees 100%
+            status_text.empty()
+            progress_bar.empty()
+
+            st.success("✅ Automation completed successfully!")
+            st.download_button(
+                label="📥 Download Consolidated Report",
+                data=output.getvalue(),
+                file_name="Ürün Raporu.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        except Exception as e:
+            st.error(f"❌ Error occurred: {str(e)}")
+            st.info("Check if your files match the required column structure.")
+
+else:
+    st.info("Please upload all 4 files to begin.")
